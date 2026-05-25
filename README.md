@@ -1,6 +1,8 @@
 # RAG Pipeline
 
-A production-pattern Retrieval-Augmented Generation pipeline built on a synthetic SOC document corpus. Demonstrates the full RAG loop: corpus ingestion, chunking, embedding, vector retrieval, grounded generation, and a structured evaluation harness.
+Full RAG loop over a synthetic SOC document corpus — chunking, embedding, vector retrieval, grounded generation, and a structured eval harness.
+
+**Stack:** OpenAI `text-embedding-3-small` · Chroma · `gpt-4.1-nano` · Python
 
 ## Architecture
 
@@ -9,26 +11,23 @@ corpus/ (.md files)
       │
       ▼
   [ingest.py]
-  • Paragraph-level chunking
-  • OpenAI text-embedding-3-small
-  • Stored in Chroma (cosine space)
+  • Paragraph-level chunking, 500-char sentence-boundary fallback
+  • text-embedding-3-small embeddings
+  • Persisted to Chroma (cosine space)
       │
       ▼
   [retrieve.py]
-  • Embed query (same model)
-  • Cosine similarity search → top-k chunks + distances
+  • Embed query, cosine search → top-k chunks + distances
       │
       ▼
   [generate.py]
-  • Format context block from retrieved chunks
-  • Grounded prompt → gpt-4.1-nano
+  • Context block injected into prompt → gpt-4.1-nano
   • Response cites source documents
       │
       ▼
   [eval.py]
-  • 5 test cases with expected keywords
-  • Measures: retrieval_hit, completeness, grounded
-  • Outputs JSON report
+  • 5 test cases, 3 named dimensions
+  • JSON report
 ```
 
 ## Setup
@@ -37,94 +36,62 @@ corpus/ (.md files)
 pip install -r requirements.txt
 ```
 
-On Windows (PowerShell), create the `.env` file with:
+Create `.env` — on Windows (PowerShell):
 ```powershell
 'OPENAI_API_KEY=sk-your-key-here' | Out-File -FilePath .env -Encoding utf8
 ```
-
 On Mac/Linux:
 ```bash
 echo "OPENAI_API_KEY=sk-your-key-here" > .env
 ```
-
-> Note: avoid using `echo "..." > .env` in PowerShell — the `>` redirect writes UTF-16 by default, which breaks `python-dotenv`.
+> Avoid `echo > .env` in PowerShell — `>` writes UTF-16, which breaks `python-dotenv`.
 
 ## Usage
 
 ```bash
-# 1. Ingest the corpus (run once, or after changing corpus/)
+# Ingest corpus (once, or after changes to corpus/)
 python main.py ingest
 
-# 2. Query the pipeline
+# Query
 python main.py query "What containment steps apply to a malware-infected endpoint?"
 
-# 3. Run the evaluation harness
+# Eval
 python main.py eval
 ```
 
-## Design Decisions
+## Design Notes
 
-### Chunking Strategy
+**Chunking:** Paragraph-level (`\n\n`) — retrieval quality holds at semantic boundaries, not arbitrary character counts. Sentence-boundary fallback at 500 chars keeps chunks dense enough to embed usefully. Fixed-size windowing is fine for unstructured prose; structured docs (policies, runbooks) chunk more cleanly at paragraph breaks.
 
-**Approach:** Paragraph-level primary split (`\n\n`), with a sentence-boundary fallback for paragraphs exceeding 500 characters.
+**Embedding:** `text-embedding-3-small` — good semantic similarity performance at low cost. `text-embedding-3-large` doesn't move the needle at this corpus scale.
 
-**Why paragraph-level:** A paragraph is a semantic unit — it expresses a single idea. Splitting at arbitrary character counts (e.g. fixed-size sliding windows) cuts across logical boundaries, producing chunks where the first sentence belongs to one topic and the last belongs to another. That degrades both embedding quality (the vector represents a blended idea) and retrieved context (the generator gets partial thoughts).
+**Retrieval:** Chroma persistent store, cosine similarity, `top_k=3`. Each result logged with chunk ID, source, and distance — retrieval decisions are traceable. Chroma is the right call below ~100k chunks; above that, pgvector or a dedicated service.
 
-**Why 500-char fallback:** Embedding models encode a chunk into a single fixed-dimension vector. Very long chunks average together many ideas, making the vector less discriminative. 500 characters (~80-100 words) is a practical ceiling for this corpus — long enough to carry meaning, short enough to remain specific.
+**Generation:** `gpt-4.1-nano`, `temperature=0.1`. System prompt constrains output to retrieved context and instructs explicit refusal when context is insufficient — primary faithfulness control.
 
-**Trade-off vs alternatives:**
-- *Fixed-size with overlap* is more common in tutorials because it's corpus-agnostic, but produces noisier chunks for structured documents like policies and runbooks.
-- *Semantic chunking* (split when sentence embedding similarity drops) is theoretically superior but adds latency and complexity at ingest time — overkill for a corpus this size.
+## Evaluation
 
-### Embedding Model
-
-**Model:** `text-embedding-3-small` (OpenAI)
-
-**Why:** Strong semantic similarity performance, 1536-dimension output, low cost. For a corpus of this scale (~50 chunks), the quality ceiling of `text-embedding-3-large` (3072 dimensions) adds cost with no measurable benefit. The same model is used for both corpus chunks and query embeddings — this is required, not optional; mismatched models produce meaningless similarity scores.
-
-### Retrieval Approach
-
-**Method:** Cosine similarity via Chroma's persistent vector store. `top_k=3` by default.
-
-**Why cosine over L2:** Cosine similarity measures directional alignment between vectors, not absolute distance. This makes it robust to differences in text length — a short query and a long chunk can still score highly if they share conceptual direction. L2 distance penalises length differences.
-
-**Why Chroma:** Zero infrastructure, embedded in-process, Python-native, persists to disk. Appropriate for corpora up to ~100k chunks. At larger scale (millions of chunks, concurrent queries), a dedicated vector database (Pinecone, Weaviate, pgvector) would be warranted.
-
-**Retrieved context logging:** Each query logs chunk IDs, source documents, and cosine distances so retrieval decisions are traceable. In production this feeds observability tooling.
-
-### Generation
-
-**Model:** `gpt-4.1-nano` — cost-efficient instruction-following, large context window, no reasoning overhead needed for grounded Q&A.
-
-**Temperature:** 0.1 — low variance is correct for factual retrieval tasks. Higher temperature introduces hallucination risk without benefit.
-
-**Prompt design:** System prompt explicitly constrains the model to the provided context and instructs it to flag when context is insufficient. This is the primary faithfulness control — the model is told it is not allowed to invent.
-
-## Evaluation Harness
-
-Five test cases covering the three document types (incident reports, policies, runbooks). Each case defines a query and expected keywords — terms that must appear in both the retrieved chunks (retrieval quality) and the final response (completeness).
-
-| Dimension | What it measures | Failure means |
+| Dimension | Measures | Failure means |
 |---|---|---|
-| `retrieval_hit` | Expected keywords present in retrieved chunks | Vector search failed — wrong chunks returned |
-| `completeness` | Expected keywords present in generated response | Generator dropped available information |
-| `grounded` | Response is substantive, no explicit refusal | Model couldn't use context or context was empty |
+| `retrieval_hit` | Expected keywords in retrieved chunks | Vector search returned wrong chunks |
+| `completeness` | Expected keywords in generated response | Generator dropped available information |
+| `grounded` | Response is substantive, no refusal | Model couldn't use context |
 
-**Limitation:** `grounded` is a proxy. True faithfulness measurement — does the response contain claims not supported by the retrieved context? — requires an LLM-as-judge step. That is implemented in the companion [Eval Harness](../eval-harness/) project.
+`grounded` is a keyword-based proxy. True faithfulness (does the response assert things not in the retrieved context?) requires LLM-as-judge — implemented in the companion [Eval Harness](../eval-harness/) project.
 
-## Known Limitations at Scale
+## Known Limitations
 
 | Limitation | Threshold | Mitigation |
 |---|---|---|
-| Chroma in-process | ~100k chunks before latency degrades | Migrate to Chroma server mode or pgvector |
-| No chunk overlap | Adjacent context can be split across chunk boundaries | Add 1-sentence overlap at ingest |
-| Fixed `top_k=3` | Deep queries may need more context | Make `top_k` adaptive based on distance distribution |
-| No reranking | Cosine similarity is a blunt instrument | Add a cross-encoder reranker (e.g. Cohere Rerank) as a second-stage filter |
-| Single embedding model | `text-embedding-3-small` may underperform on domain-specific jargon | Fine-tune embeddings or use a domain-adapted model if retrieval degrades |
+| Chroma in-process | ~100k chunks | Migrate to Chroma server mode or pgvector |
+| No chunk overlap | Boundary splits lose adjacent context | Add 1-sentence overlap at ingest |
+| Fixed `top_k=3` | Deep queries may need more context | Adaptive `top_k` based on distance distribution |
+| No reranking | Cosine similarity is a blunt first-pass | Cross-encoder reranker as second-stage filter |
+| Single embedding model | May underperform on domain jargon | Domain-adapted or fine-tuned embeddings |
 
 ## Corpus
 
-Six synthetic SOC documents — two incident reports, two security policies, two operational runbooks. All content is fabricated for demonstration purposes.
+Six synthetic SOC documents — fabricated for demonstration, no real data.
 
 | File | Type | Content |
 |---|---|---|
