@@ -1,5 +1,6 @@
 .env
 .chroma/
+notes/
 __pycache__/
 *.pyc
 *.pyo
