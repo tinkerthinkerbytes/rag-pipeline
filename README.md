@@ -33,18 +33,26 @@ corpus/ (.md files)
 ## Setup
 
 ```bash
+python -m venv venv
+
+# Mac/Linux
+source venv/bin/activate
+
+# Windows (PowerShell)
+venv\Scripts\Activate.ps1
+
 pip install -r requirements.txt
 ```
 
 Create `.env` — on Windows (PowerShell):
 ```powershell
-'OPENAI_API_KEY=sk-your-key-here' | Out-File -FilePath .env -Encoding utf8
+[System.IO.File]::WriteAllText(".env", "OPENAI_API_KEY=sk-your-key-here")
 ```
 On Mac/Linux:
 ```bash
 echo "OPENAI_API_KEY=sk-your-key-here" > .env
 ```
-> Avoid `echo > .env` in PowerShell — `>` writes UTF-16, which breaks `python-dotenv`.
+> **Windows:** avoid `Out-File -Encoding utf8` — PowerShell 5.1 writes UTF-8 with BOM, which causes `python-dotenv` to parse the key as `﻿OPENAI_API_KEY` (not found, silent failure). Avoid `echo > .env` — writes UTF-16, also breaks dotenv.
 
 ## Usage
 
