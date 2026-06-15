@@ -2,7 +2,7 @@
 
 Full RAG loop over a synthetic SOC document corpus — chunking, embedding, vector retrieval, grounded generation, and a structured eval harness.
 
-**Stack:** OpenAI `text-embedding-3-small` · Chroma · `gpt-4.1-nano` · Python
+**Stack:** OpenAI `text-embedding-3-small` · Chroma · `gpt-4.1-nano` · FastAPI · Docker · Python
 
 ## Architecture
 
@@ -56,6 +56,7 @@ echo "OPENAI_API_KEY=sk-your-key-here" > .env
 
 ## Usage
 
+### CLI
 ```bash
 # Ingest corpus (once, or after changes to corpus/)
 python main.py ingest
@@ -65,6 +66,29 @@ python main.py query "What containment steps apply to a malware-infected endpoin
 
 # Eval
 python main.py eval
+```
+
+### API
+```bash
+uvicorn app.main:app --reload
+```
+
+Corpus is ingested automatically at startup. No separate ingest step required.
+
+```bash
+# Query
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What containment steps apply to a malware-infected endpoint?", "top_k": 3}'
+
+# Health
+curl http://localhost:8000/health
+```
+
+### Docker
+```bash
+docker build -t rag-pipeline .
+docker run -p 8000:8000 -e OPENAI_API_KEY=sk-... rag-pipeline
 ```
 
 ## Design Notes
